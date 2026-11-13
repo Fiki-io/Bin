@@ -1,0 +1,123 @@
+name: Build PocketSamp QEMU Runtime
+
+on:
+  workflow_dispatch:
+
+env:
+  QEMU_VERSION: "9.1.1"
+
+jobs:
+  build-qemu:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            platform: linux/arm64
+            ldflags: "-Wl,-z,max-page-size=16384"
+          - abi: armeabi-v7a
+            platform: linux/arm/v7
+            ldflags: ""
+
+    steps:
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build static qemu-i386 (${{ matrix.abi }})
+        run: |
+          mkdir -p out/${{ matrix.abi }}
+          docker run --rm --platform ${{ matrix.platform }} \
+            -e QEMU_VERSION="${{ env.QEMU_VERSION }}" \
+            -e EXTRA_LDFLAGS="${{ matrix.ldflags }}" \
+            -v "$PWD/out/${{ matrix.abi }}:/out" \
+            alpine:3.20 sh -euxc '
+              apk add --no-cache \
+                build-base bash curl xz tar python3 py3-setuptools \
+                ninja meson pkgconfig linux-headers \
+                glib-dev glib-static pcre2-dev pcre2-static \
+                zlib-dev zlib-static gettext-static
+              mkdir -p /tmp/src && cd /tmp/src
+              curl -fsSL "https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz" -o qemu.tar.xz
+              tar -xf qemu.tar.xz
+              cd "qemu-${QEMU_VERSION}"
+              ./configure \
+                --target-list=i386-linux-user \
+                --static \
+                --disable-system \
+                --disable-tools \
+                --disable-docs \
+                --disable-capstone \
+                --disable-werror \
+                ${EXTRA_LDFLAGS:+--extra-ldflags="$EXTRA_LDFLAGS"}
+              ninja -C build qemu-i386
+              strip build/qemu-i386
+              cp build/qemu-i386 /out/libqemu_i386.so
+              chmod 755 /out/libqemu_i386.so
+              file /out/libqemu_i386.so
+            '
+
+      - name: Upload qemu artifact (${{ matrix.abi }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-${{ matrix.abi }}
+          path: out/${{ matrix.abi }}/libqemu_i386.so
+
+  build-sysroot-i386:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build minimal Debian 11 i386 sysroot + android_shim
+        run: |
+          mkdir -p out/assets
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD:/work" \
+            debian:bullseye bash -euxc '
+              dpkg --add-architecture i386
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                gcc-multilib libc6-dev-i386 xz-utils ca-certificates
+
+              mkdir -p /tmp/debs /tmp/sysroot
+              cd /tmp/debs
+              apt-get download \
+                libc6:i386 \
+                libstdc++6:i386 \
+                libgcc-s1:i386 \
+                zlib1g:i386 \
+                libssl1.1:i386
+
+              for deb in *.deb; do
+                dpkg-deb -x "$deb" /tmp/sysroot
+              done
+
+              rm -rf /tmp/sysroot/usr/share/doc \
+                     /tmp/sysroot/usr/share/man \
+                     /tmp/sysroot/usr/share/info \
+                     /tmp/sysroot/usr/share/lintian \
+                     /tmp/sysroot/usr/share/locale
+
+              mkdir -p /tmp/sysroot/lib /tmp/sysroot/etc /tmp/sysroot/etc/ssl/certs
+              gcc -m32 -shared -fPIC -O2 -Wall \
+                /work/src/android_shim.c \
+                -o /tmp/sysroot/lib/libandroid_shim.so -ldl
+              strip /tmp/sysroot/lib/libandroid_shim.so
+
+              cp /etc/ssl/certs/ca-certificates.crt /tmp/sysroot/etc/ssl/certs/ca-certificates.crt
+              printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /tmp/sysroot/etc/resolv.conf
+              printf "127.0.0.1 localhost\n" > /tmp/sysroot/etc/hosts
+              printf "hosts: files dns\n" > /tmp/sysroot/etc/nsswitch.conf
+
+              tar -C /tmp/sysroot -cJf /work/out/assets/sysroot-i386.tar.xz .
+              ls -lh /work/out/assets/sysroot-i386.tar.xz
+            '
+
+      - name: Upload sysroot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sysroot-i386
+          path: out/assets/sysroot-i386.tar.xz
