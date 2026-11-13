@@ -71,16 +71,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build minimal Debian 11 i386 sysroot + android_shim
+      - name: Build minimal i386 sysroot + android_shim
         run: |
           mkdir -p out/assets
           docker run --rm --platform linux/amd64 \
             -v "$PWD:/work" \
-            debian:bullseye bash -euxc '
-              rm -rf /etc/apt/sources.list.d/*
-              printf "deb http://deb.debian.org/debian bullseye main\n" > /etc/apt/sources.list
+            debian:bookworm bash -euxc '
               dpkg --add-architecture i386
-              apt-get -o Acquire::Check-Valid-Until=false update
+              apt-get update
               DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
                 gcc-multilib libc6-dev-i386 xz-utils ca-certificates
 
@@ -91,7 +89,15 @@ jobs:
                 libstdc++6:i386 \
                 libgcc-s1:i386 \
                 zlib1g:i386 \
-                libssl1.1:i386
+                libssl3:i386
+
+              printf "deb http://deb.debian.org/debian bullseye main\n" > /tmp/bullseye.list
+              apt-get -o Dir::Etc::sourcelist="/tmp/bullseye.list" \
+                      -o Dir::Etc::sourceparts="-" \
+                      -o Acquire::Check-Valid-Until=false update
+              apt-get -o Dir::Etc::sourcelist="/tmp/bullseye.list" \
+                      -o Dir::Etc::sourceparts="-" \
+                      download libssl1.1:i386
 
               for deb in *.deb; do
                 dpkg-deb -x "$deb" /tmp/sysroot
