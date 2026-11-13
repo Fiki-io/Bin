@@ -35,11 +35,14 @@ jobs:
             -e EXTRA_LDFLAGS="${{ matrix.ldflags }}" \
             -v "$PWD/out/${{ matrix.abi }}:/out" \
             alpine:3.20 sh -euxc '
+              apk update
+              EXTRA_PKGS=$(apk search -q -x gettext-static || true)
               apk add --no-cache \
                 build-base bash curl xz tar file python3 py3-setuptools \
                 ninja meson pkgconfig linux-headers \
-                glib-dev glib-static pcre2-dev pcre2-static \
-                zlib-dev zlib-static gettext-static
+                glib-dev glib-static pcre2-dev zlib-dev zlib-static $EXTRA_PKGS
+              apk info -R glib-static || true
+              ls -la /usr/lib/libpcre2* /usr/lib/libglib* /usr/lib/libz* || true
               mkdir -p /tmp/src && cd /tmp/src
               curl -fsSL "https://download.qemu.org/qemu-${TARGET_QEMU_VER}.tar.xz" -o qemu.tar.xz
               tar -xf qemu.tar.xz
