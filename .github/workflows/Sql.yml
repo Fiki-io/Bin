@@ -39,11 +39,11 @@ jobs:
             -v "$PWD/out/assets:/assets" \
             alpine:3.20 sh -euxc '
               apk update
-              EXTRA_PKGS=$(apk search -q -x ncurses-static || true)
+              EXTRA_PKGS=$(apk search -q -x ncurses-static openssl-libs-static || true)
               apk add --no-cache \
                 build-base bash curl tar gzip xz file perl \
                 cmake ninja bison flex linux-headers \
-                ncurses-dev $EXTRA_PKGS
+                openssl-dev pcre2-dev zlib-dev zlib-static ncurses-dev $EXTRA_PKGS
 
               mkdir -p /tmp/src && cd /tmp/src
               curl -fsSL "https://archive.mariadb.org/mariadb-${TARGET_MARIADB_VER}/source/mariadb-${TARGET_MARIADB_VER}.tar.gz" -o mariadb.tar.gz
@@ -65,9 +65,9 @@ jobs:
                 -DWITH_SYSTEMD=no \
                 -DIGNORE_AIO_CHECK=YES \
                 -DWITH_URING=OFF \
-                -DWITH_SSL=bundled \
-                -DWITH_ZLIB=bundled \
-                -DWITH_PCRE=bundled \
+                -DWITH_SSL=system \
+                -DWITH_ZLIB=system \
+                -DWITH_PCRE=system \
                 -DWITH_INNODB_LZ4=OFF \
                 -DWITH_INNODB_LZO=OFF \
                 -DWITH_INNODB_SNAPPY=OFF \
