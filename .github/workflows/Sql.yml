@@ -1,0 +1,160 @@
+name: Build PocketSamp MariaDB Runtime
+
+on:
+  workflow_dispatch:
+
+env:
+  TARGET_MARIADB_VER: "10.11.9"
+
+jobs:
+  build-mariadb:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            platform: linux/arm64
+            ldflags: "-static -Wl,-z,max-page-size=16384"
+          - abi: armeabi-v7a
+            platform: linux/arm/v7
+            ldflags: "-static"
+
+    steps:
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build static mariadbd & mariadb client (${{ matrix.abi }})
+        run: |
+          mkdir -p out/${{ matrix.abi }} out/assets
+          docker run --rm --platform ${{ matrix.platform }} \
+            -e TARGET_MARIADB_VER="${{ env.TARGET_MARIADB_VER }}" \
+            -e TARGET_LDFLAGS="${{ matrix.ldflags }}" \
+            -e TARGET_ABI="${{ matrix.abi }}" \
+            -v "$PWD/out/${{ matrix.abi }}:/out" \
+            -v "$PWD/out/assets:/assets" \
+            alpine:3.20 sh -euxc '
+              apk update
+              EXTRA_PKGS=$(apk search -q -x ncurses-static || true)
+              apk add --no-cache \
+                build-base bash curl tar gzip xz file perl \
+                cmake ninja bison flex linux-headers \
+                ncurses-dev $EXTRA_PKGS
+
+              mkdir -p /tmp/src && cd /tmp/src
+              curl -fsSL "https://archive.mariadb.org/mariadb-${TARGET_MARIADB_VER}/source/mariadb-${TARGET_MARIADB_VER}.tar.gz" -o mariadb.tar.gz
+              tar -xzf mariadb.tar.gz
+              cd "mariadb-${TARGET_MARIADB_VER}"
+
+              cmake -S . -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=MinSizeRel \
+                -DCMAKE_EXE_LINKER_FLAGS="${TARGET_LDFLAGS}" \
+                -DCMAKE_FIND_LIBRARY_SUFFIXES=".a" \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DWITH_UNIT_TESTS=OFF \
+                -DWITH_WSREP=OFF \
+                -DWITH_EMBEDDED_SERVER=OFF \
+                -DWITH_SAFEMALLOC=OFF \
+                -DENABLED_PROFILING=OFF \
+                -DENABLE_DTRACE=OFF \
+                -DWITH_JEMALLOC=no \
+                -DWITH_SYSTEMD=no \
+                -DIGNORE_AIO_CHECK=YES \
+                -DWITH_URING=OFF \
+                -DWITH_SSL=bundled \
+                -DWITH_ZLIB=bundled \
+                -DWITH_PCRE=bundled \
+                -DWITH_INNODB_LZ4=OFF \
+                -DWITH_INNODB_LZO=OFF \
+                -DWITH_INNODB_SNAPPY=OFF \
+                -DWITH_INNODB_BZIP2=OFF \
+                -DWITH_INNODB_LZMA=OFF \
+                -DPLUGIN_INNOBASE=STATIC \
+                -DPLUGIN_ARIA=STATIC \
+                -DPLUGIN_MYISAM=STATIC \
+                -DPLUGIN_MYISAMMRG=STATIC \
+                -DPLUGIN_HEAP=STATIC \
+                -DPLUGIN_CSV=STATIC \
+                -DPLUGIN_PERFSCHEMA=NO \
+                -DPLUGIN_MROONGA=NO \
+                -DPLUGIN_ROCKSDB=NO \
+                -DPLUGIN_SPIDER=NO \
+                -DPLUGIN_CONNECT=NO \
+                -DPLUGIN_OQGRAPH=NO \
+                -DPLUGIN_FEDERATED=NO \
+                -DPLUGIN_FEDERATEDX=NO \
+                -DPLUGIN_BLACKHOLE=NO \
+                -DPLUGIN_ARCHIVE=NO \
+                -DPLUGIN_SPHINX=NO \
+                -DPLUGIN_S3=NO \
+                -DPLUGIN_COLUMNSTORE=NO \
+                -DPLUGIN_AUTH_PAM=NO \
+                -DPLUGIN_AUTH_GSSAPI=NO \
+                -DPLUGIN_AUTH_SOCKET=NO \
+                -DPLUGIN_CRACKLIB_PASSWORD_CHECK=NO \
+                -DPLUGIN_SIMPLE_PASSWORD_CHECK=NO \
+                -DPLUGIN_QUERY_CACHE_INFO=NO \
+                -DPLUGIN_QUERY_RESPONSE_TIME=NO \
+                -DPLUGIN_AUDIT_NULL=NO \
+                -DPLUGIN_DAEMON_EXAMPLE=NO \
+                -DPLUGIN_EXAMPLE=NO \
+                -DPLUGIN_FTEXAMPLE=NO \
+                -DPLUGIN_TEST_SQL_DISCOVERY=NO \
+                -DPLUGIN_TEST_VERSIONING=NO \
+                -DPLUGIN_METADATA_LOCK_INFO=NO \
+                -DPLUGIN_SERVER_AUDIT=NO \
+                -DPLUGIN_WSREP_INFO=NO \
+                -DPLUGIN_DISKS=NO \
+                -DPLUGIN_FEEDBACK=NO \
+                -DPLUGIN_USERSTAT=NO \
+                -DPLUGIN_LOCALES=NO \
+                -DPLUGIN_SQL_ERRLOG=NO \
+                -DPLUGIN_HANDLER_SOCKET=NO \
+                -DPLUGIN_TOKUDB=NO
+
+              if ! bash -eo pipefail -c "ninja -C build mariadbd mariadb mariadb-dump 2>&1 | tee /tmp/build.log"; then
+                echo "=== FIRST COMPILER ERRORS ==="
+                grep -n -C 2 "error:" /tmp/build.log | head -n 50 || true
+                echo "=== TAIL LOG ==="
+                tail -n 40 /tmp/build.log
+                exit 1
+              fi
+
+              strip build/sql/mariadbd build/client/mariadb build/client/mariadb-dump
+              cp build/sql/mariadbd /out/libmariadbd.so
+              cp build/client/mariadb /out/libmariadb_cli.so
+              cp build/client/mariadb-dump /out/libmariadb_dump.so
+              chmod 755 /out/libmariadbd.so /out/libmariadb_cli.so /out/libmariadb_dump.so
+              file /out/libmariadbd.so /out/libmariadb_cli.so /out/libmariadb_dump.so
+
+              if [ "${TARGET_ABI}" = "arm64-v8a" ]; then
+                mkdir -p /tmp/dbassets/share/english /tmp/dbassets/init
+                cp build/sql/share/english/errmsg.sys /tmp/dbassets/share/english/errmsg.sys
+                cp scripts/mysql_system_tables.sql /tmp/dbassets/init/mysql_system_tables.sql
+                cp scripts/mysql_system_tables_data.sql /tmp/dbassets/init/mysql_system_tables_data.sql
+                tar -C /tmp/dbassets -cJf /assets/mariadb-assets.tar.xz .
+                ls -lh /assets/mariadb-assets.tar.xz
+              fi
+            '
+
+      - name: Upload MariaDB binaries (${{ matrix.abi }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: mariadb-${{ matrix.abi }}
+          path: |
+            out/${{ matrix.abi }}/libmariadbd.so
+            out/${{ matrix.abi }}/libmariadb_cli.so
+            out/${{ matrix.abi }}/libmariadb_dump.so
+          if-no-files-found: error
+
+      - name: Upload MariaDB assets
+        if: matrix.abi == 'arm64-v8a'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mariadb-assets
+          path: out/assets/mariadb-assets.tar.xz
+          if-no-files-found: error
