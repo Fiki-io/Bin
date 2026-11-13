@@ -36,7 +36,7 @@ jobs:
             -v "$PWD/out/${{ matrix.abi }}:/out" \
             alpine:3.20 sh -euxc '
               apk add --no-cache \
-                build-base bash curl xz tar python3 py3-setuptools \
+                build-base bash curl xz tar file python3 py3-setuptools \
                 ninja meson pkgconfig linux-headers \
                 glib-dev glib-static pcre2-dev pcre2-static \
                 zlib-dev zlib-static gettext-static
@@ -77,8 +77,10 @@ jobs:
           docker run --rm --platform linux/amd64 \
             -v "$PWD:/work" \
             debian:bullseye bash -euxc '
+              rm -rf /etc/apt/sources.list.d/*
+              printf "deb http://deb.debian.org/debian bullseye main\n" > /etc/apt/sources.list
               dpkg --add-architecture i386
-              apt-get update
+              apt-get -o Acquire::Check-Valid-Until=false update
               DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
                 gcc-multilib libc6-dev-i386 xz-utils ca-certificates
 
