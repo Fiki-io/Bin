@@ -8,42 +8,64 @@ env:
 
 jobs:
   build-mariadb:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         include:
           - abi: arm64-v8a
-            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            use_qemu: false
+            platform_arg: ""
             ldflags: "-static -Wl,-z,max-page-size=16384"
           - abi: armeabi-v7a
-            platform: linux/arm/v7
+            runner: ubuntu-24.04
+            use_qemu: true
+            platform_arg: "--platform linux/arm/v7"
             ldflags: "-static"
 
     steps:
       - name: Set up QEMU
+        if: matrix.use_qemu
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
+        if: matrix.use_qemu
         uses: docker/setup-buildx-action@v3
+
+      - name: Cache ccache (${{ matrix.abi }})
+        uses: actions/cache@v4
+        with:
+          path: .ccache/${{ matrix.abi }}
+          key: mariadb-ccache-${{ matrix.abi }}-${{ env.TARGET_MARIADB_VER }}-${{ github.run_id }}
+          restore-keys: |
+            mariadb-ccache-${{ matrix.abi }}-${{ env.TARGET_MARIADB_VER }}-
 
       - name: Build static mariadbd & mariadb client (${{ matrix.abi }})
         run: |
-          mkdir -p out/${{ matrix.abi }} out/assets
-          docker run --rm --platform ${{ matrix.platform }} \
+          mkdir -p out/${{ matrix.abi }} out/assets .ccache/${{ matrix.abi }}
+          docker run --rm ${{ matrix.platform_arg }} \
             -e TARGET_MARIADB_VER="${{ env.TARGET_MARIADB_VER }}" \
             -e TARGET_LDFLAGS="${{ matrix.ldflags }}" \
             -e TARGET_ABI="${{ matrix.abi }}" \
+            -e CCACHE_DIR=/ccache \
             -v "$PWD/out/${{ matrix.abi }}:/out" \
             -v "$PWD/out/assets:/assets" \
+            -v "$PWD/.ccache/${{ matrix.abi }}:/ccache" \
             alpine:3.20 sh -euxc '
               apk update
-              EXTRA_PKGS=$(apk search -q -x ncurses-static openssl-libs-static || true)
+              EXTRA_PKGS=$(apk search -q -x ncurses-static openssl-libs-static libedit-static || true)
               apk add --no-cache \
-                build-base bash curl tar gzip xz file perl \
+                build-base bash curl tar gzip xz file perl ccache \
                 cmake ninja bison flex linux-headers \
-                openssl-dev pcre2-dev zlib-dev zlib-static ncurses-dev $EXTRA_PKGS
+                openssl-dev pcre2-dev zlib-dev zlib-static \
+                ncurses-dev libedit-dev $EXTRA_PKGS
+
+              if [ ! -e /usr/lib/libcurses.a ] && [ -e /usr/lib/libncursesw.a ]; then
+                ln -s /usr/lib/libncursesw.a /usr/lib/libcurses.a
+              fi
+              ls -la /usr/lib/libedit* /usr/lib/libcurses* /usr/lib/libncurses* || true
 
               mkdir -p /tmp/src && cd /tmp/src
               curl -fsSL "https://archive.mariadb.org/mariadb-${TARGET_MARIADB_VER}/source/mariadb-${TARGET_MARIADB_VER}.tar.gz" -o mariadb.tar.gz
@@ -52,6 +74,8 @@ jobs:
 
               cmake -S . -B build -G Ninja \
                 -DCMAKE_BUILD_TYPE=MinSizeRel \
+                -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+                -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
                 -DCMAKE_EXE_LINKER_FLAGS="${TARGET_LDFLAGS}" \
                 -DCMAKE_FIND_LIBRARY_SUFFIXES=".a" \
                 -DBUILD_SHARED_LIBS=OFF \
@@ -116,7 +140,7 @@ jobs:
                 -DPLUGIN_HANDLER_SOCKET=NO \
                 -DPLUGIN_TOKUDB=NO
 
-              if ! bash -eo pipefail -c "ninja -C build mariadbd mariadb mariadb-dump 2>&1 | tee /tmp/build.log"; then
+              if ! bash -eo pipefail -c "ninja -C build mariadb mariadb-dump mariadbd 2>&1 | tee /tmp/build.log"; then
                 echo "=== FIRST COMPILER ERRORS ==="
                 grep -n -C 2 "error:" /tmp/build.log | head -n 50 || true
                 echo "=== TAIL LOG ==="
