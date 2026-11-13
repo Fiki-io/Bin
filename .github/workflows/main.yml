@@ -41,8 +41,6 @@ jobs:
                 build-base bash curl xz tar file python3 py3-setuptools \
                 ninja meson pkgconfig linux-headers \
                 glib-dev glib-static pcre2-dev zlib-dev zlib-static $EXTRA_PKGS
-              apk info -R glib-static || true
-              ls -la /usr/lib/libpcre2* /usr/lib/libglib* /usr/lib/libz* || true
               mkdir -p /tmp/src && cd /tmp/src
               curl -fsSL "https://download.qemu.org/qemu-${TARGET_QEMU_VER}.tar.xz" -o qemu.tar.xz
               tar -xf qemu.tar.xz
@@ -55,8 +53,13 @@ jobs:
                 --disable-docs \
                 --disable-capstone \
                 --disable-werror \
+                --extra-cflags="-D_LARGEFILE64_SOURCE" \
                 ${EXTRA_LDFLAGS:+--extra-ldflags="$EXTRA_LDFLAGS"}
-              ninja -C build qemu-i386
+              if ! bash -eo pipefail -c "ninja -C build qemu-i386 2>&1 | tee /tmp/build.log"; then
+                echo "=== FIRST COMPILER ERRORS ==="
+                grep -n -C 2 "error:" /tmp/build.log | head -n 50 || tail -n 50 /tmp/build.log
+                exit 1
+              fi
               strip build/qemu-i386
               cp build/qemu-i386 /out/libqemu_i386.so
               chmod 755 /out/libqemu_i386.so
